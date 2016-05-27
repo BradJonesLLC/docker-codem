@@ -1,0 +1,23 @@
+# Development compose file.
+
+version: '2'
+services:
+  transcoder:
+    build: transcoder
+    volumes:
+     - /srv/videos:/srv/videos
+    links:
+     - db
+  scheduler:
+    build: scheduler
+    ports:
+     - "127.0.0.1:3000:3000"
+    links:
+     - db
+  db:
+    image: mysql:5.7
+    environment:
+     - MYSQL_ROOT_PASSWORD=docker
+     - MYSQL_DATABASE=codem
+     - MYSQL_USER=codem
+     - MYSQL_PASSWORD=codem

@@ -1,0 +1,4 @@
+MAILTO=""
+SHELL=/bin/bash
+
+*/2 * * * * curl -s http://localhost:3000/api/schedule
