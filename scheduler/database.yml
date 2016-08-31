@@ -3,9 +3,9 @@ common: &common
   encoding: utf8
   reconnect: false
   pool: 5
-  host: db
-  username: codem
-  password: codem
+  host:  <%= ENV['MYSQL_HOST'] %>
+  username:  <%= ENV['MYSQL_USERNAME'] %>
+  password:  <%= ENV['MYSQL_PASSWORD'] %>
 
 development:
   <<: *common

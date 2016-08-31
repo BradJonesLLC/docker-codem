@@ -12,6 +12,8 @@ transcoder image.
 
 ### Usage
 
+* Set environment variables `MYSQL_HOST`, `MYSQL_USERNAME` AND `MYSQL_PASSWORD`
+    for the scheduler image to the appliable values
 * Remember to run `bundle exec rake codem:install` inside the scheduler (if you're using it)
     to initialize the database.
 
