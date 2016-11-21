@@ -1,0 +1,506 @@
+diff --git a/app/controllers/api/presets_controller.rb b/app/controllers/api/presets_controller.rb
+index 7273447..e88c1f6 100644
+--- a/app/controllers/api/presets_controller.rb
++++ b/app/controllers/api/presets_controller.rb
+@@ -14,6 +14,7 @@ module Api
+     #       "id":1,
+     #       "name":"h264",
+     #       "parameters":"-acodec libfaac -ab 96k -ar 44100 -vcodec libx264 -vb 416k -vpre slow -vpre baseline -s 320x180 -y",
++    #       "segment_time_options":null,
+     #       "thumbnail_options":null,
+     #       "updated_at":"2011-05-09T11:59:53Z"}
+     #     }
+@@ -33,6 +34,7 @@ module Api
+     # <tt>params</tt>:: Parameters to use
+     # Optional:
+     # <tt>thumbnail_options</tt>:: Thumbnail options to use
++    # <tt>segment_time_options</tt>:: HLS Segment time options to use
+     #
+     # === Response codes
+     # <tt>success</tt>:: <tt>201 created</tt>
+@@ -46,6 +48,7 @@ module Api
+     #     "id":3,
+     #     "name":"webm",
+     #     "parameters":"params",
++    #     "segment_time_options":null,
+     #     "thumbnail_options":null,
+     #     "updated_at":"2011-05-10T14:44:07Z"}
+     #   }
+@@ -79,6 +82,7 @@ module Api
+     #     "id":3,
+     #     "name":"webm",
+     #     "parameters":"params",
++    #     "segment_time_options":null,
+     #     "thumbnail_options":null,
+     #     "updated_at":"2011-05-10T14:44:07Z"}
+     #   }
+@@ -93,6 +97,7 @@ module Api
+     # <tt>name</tt>:: Name of the preset
+     # <tt>parameters</tt>:: Parameters of the preset
+     # <tt>thumbnail_options</tt>:: Thumbnail options
++    # <tt>segment_time_options</tt>:: Segment time options
+     #
+     # === Example
+     #
+@@ -103,11 +108,15 @@ module Api
+         params[:name] = params[:preset][:name]
+         params[:parameters] = params[:preset][:parameters]
+         params[:thumbnail_options] = params[:preset][:thumbnail_options]
++        params[:segment_time_options] = params[:preset][:segment_time_options]
+       end
+ 
+       preset = Preset.find(params[:id])
+ 
+-      if preset.update_attributes(name: params[:name], parameters: params[:parameters], thumbnail_options: params[:thumbnail_options])
++      if preset.update_attributes(name: params[:name],
++                                  parameters: params[:parameters],
++                                  thumbnail_options: params[:thumbnail_options],
++                                  segment_time_options: params[:segment_time_options])
+         respond_with preset, location: api_preset_url(preset) do |format|
+           format.html { redirect_to presets_path }
+         end
+diff --git a/app/controllers/api/scheduler_controller.rb b/app/controllers/api/scheduler_controller.rb
+index 64d73da..2688295 100644
+--- a/app/controllers/api/scheduler_controller.rb
++++ b/app/controllers/api/scheduler_controller.rb
+@@ -5,12 +5,18 @@
+ # every 2 minutes or the like.
+ module Api
+   class SchedulerController < ApiController
++    respond_to :html
++
+     # == Update the statuses for all relevant jobs
+     #
+     # All unfinished jobs will have their statuses updated, and the number of affected jobs will be returned as result.
+     # A job is unfinished if it's state is either <tt>scheduled</tt>, <tt>processing</tt> or <tt>on hold</tt>.
+     def schedule
+-      respond_with Schedule.run!
++      result = Schedule.run!
++      respond_to do |format|
++        format.html { render text: result }
++        format.json { respond_with result }
++      end
+     end
+   end
+ end
+diff --git a/app/models/preset.rb b/app/models/preset.rb
+index 2dac504..0ddd5b9 100644
+--- a/app/models/preset.rb
++++ b/app/models/preset.rb
+@@ -2,6 +2,7 @@ class Preset < ActiveRecord::Base
+   has_many :jobs
+ 
+   validates :name, presence: true, uniqueness: true
++  validates :segment_time_options, numericality: { only_integer: true }, allow_blank: true
+ 
+   validate :should_have_params_or_thumbnail_options
+   validate :thumbnail_options, :valid_json_options, if: proc { |p| p.thumbnail_options.present? }
+@@ -10,7 +11,8 @@ class Preset < ActiveRecord::Base
+     attributes = attributes[:preset] if attributes[:preset]
+     create(name: attributes['name'],
+            parameters: attributes['parameters'],
+-           thumbnail_options: attributes['thumbnail_options'])
++           thumbnail_options: attributes['thumbnail_options'],
++           segment_time_options: attributes['segment_time_options'])
+   end
+ 
+   private
+diff --git a/app/models/transcoder.rb b/app/models/transcoder.rb
+index 5c5f814..b48409e 100644
+--- a/app/models/transcoder.rb
++++ b/app/models/transcoder.rb
+@@ -13,18 +13,21 @@ class Transcoder
+     end
+ 
+     def job_to_json(job)
+-      if job.preset.thumbnail_options.present?
+-        thumb_opts = MultiJson.load(job.preset.thumbnail_options)
+-      else
+-        thumb_opts = nil
+-      end
+-
+-      {
++      json = {
+         'source_file' => job.source_file,
+         'destination_file' => job.destination_file,
+         'encoder_options' => job.preset.parameters,
+-        'thumbnail_options' => thumb_opts
+       }
++
++      if job.preset.thumbnail_options.present?
++        json.merge!('thumbnail_options' => MultiJson.load(job.preset.thumbnail_options))
++      end
++
++      if job.preset.segment_time_options.present?
++        json.merge!('segments_options' => { 'segment_time' => job.preset.segment_time_options.to_i })
++      end
++
++      json
+     end
+ 
+     def host_status(host)
+diff --git a/app/views/presets/_form.html.erb b/app/views/presets/_form.html.erb
+index 3076931..cd99562 100644
+--- a/app/views/presets/_form.html.erb
++++ b/app/views/presets/_form.html.erb
+@@ -31,13 +31,20 @@
+     </div>
+ 
+     <div class="control-group">
+-      <%= f.label :thumbnail_options, class: 'control-label required' %>
++      <%= f.label :thumbnail_options, class: 'control-label' %>
+       <div class="controls">
+         <%= f.text_field :thumbnail_options, class: 'form-control' %>
+       <a href="#thumbnail_help" role="button" class="btn" data-toggle="modal">Help</a>
+       </div>
+     </div>
+ 
++    <div class="control-group">
++      <%= f.label :segment_time_options, 'HLS Segment time (as integer)', class: 'control-label' %>
++      <div class="controls">
++        <%= f.text_field :segment_time_options, class: 'form-control' %>
++      <a href="#segment_time_help" role="button" class="btn" data-toggle="modal">Help</a>
++      </div>
++    </div>
+   </fieldset>
+ 
+   <div class="form-actions"> 
+@@ -65,18 +72,46 @@
+    		      <li><p>An array of explicit percentages, this will trigger thumbnails only at the specified positions.<pre>{ "percentages": [0.25, 0.5, 0.75] }</pre> will generate thumbnails at 25%, 50% and 75%.</p></li>
+    		      <li>A single offset in seconds, this will trigger a thumbnail every x seconds.<pre>{ "seconds": 10 }</pre> will generate thumbnails at 0 seconds, 10 seconds, 20 seconds, etc., until the end of the source file.</li>
+    		      <li><p>An array of explicit offsets, this will trigger thumbnails only at the specified positions.<pre>{ "seconds": [30, 60, 90] }</pre> will generate thumbnails at 30 seconds, 60 seconds and 90 seconds.</p></li>
++            </ul>
++            <ul>
++              <li>A size can be specified in pixels (width x height). If omitted it will generate thumbnails the size of the source video. (optional)</li>
++              <li>A format for the thumbnails. The format must be supported by your ffmpeg binary. If omitted it will generate thumbnails in the JPEG format. Most people will use either "jpg" or "png". (optional)</li>
++            </ul>		
+           </ul>
+-          <ul>
+-            <li>A size can be specified in pixels (width x height). If omitted it will generate thumbnails the size of the source video. (optional)</li>
+-            <li>A format for the thumbnails. The format must be supported by your ffmpeg binary. If omitted it will generate thumbnails in the JPEG format. Most people will use either "jpg" or "png". (optional)</li>
+-          </ul>		
+         </ul>
+-      </ul>
+-      <p>See <a href="https://github.com/madebyhiro/codem-transcode#usage">github.com/madebyhiro/codem-transcode#usage</a> for more info.</p>
+-    </div>
+-    <div class="modal-footer">
+-      <button class="btn btn-primary" data-dismiss="modal" aria-hidden="true">Close</button>
++        <p>See <a href="https://github.com/madebyhiro/codem-transcode#usage">github.com/madebyhiro/codem-transcode#usage</a> for more info.</p>
++      </div>
++      <div class="modal-footer">
++        <button class="btn btn-primary" data-dismiss="modal" aria-hidden="true">Close</button>
++      </div>
+     </div>
+   </div>
+ </div>
++
++<div class="modal fade" id="segment_time_help">
++  <div class="modal-dialog">
++    <div class="modal-content">
++
++      <div class="modal-header">
++        <button type="button" class="close" data-dismiss="modal" aria-hidden="true">×</button>
++        <h3>Segment time options</h3>
++      </div>
++      <div class="modal-body">
++        <p>
++        By using the segment time options, Codem transcodes a video to the <a href="https://en.wikipedia.org/wiki/HTTP_Live_Streaming" target="_blank">HLS</a> format.<br/>
++        The value entered here will be passed on to the Transcoder, instructing it to create segments with the specified length as seconds.<br/>
++        </p>
++        <p>
++        We recommend to transcode the video to MP4 in order to use segmenting.
++        </p>
++        <p>
++        <b>This requires codem-transcode v0.5.4 or higher.</b>
++        </p>
++        <p>See <a href="https://github.com/madebyhiro/codem-transcode#segmenting--hls">github.com/madebyhiro/codem-transcode#usegmenting--hls</a> for more info.</p>
++      </div>
++      <div class="modal-footer">
++        <button class="btn btn-primary" data-dismiss="modal" aria-hidden="true">Close</button>
++      </div>
++    </div>
++  </div>
+ </div>
+diff --git a/db/migrate/20150916122149_add_segment_time_options_to_presets.rb b/db/migrate/20150916122149_add_segment_time_options_to_presets.rb
+new file mode 100644
+index 0000000..5ae9479
+--- /dev/null
++++ b/db/migrate/20150916122149_add_segment_time_options_to_presets.rb
+@@ -0,0 +1,6 @@
++class AddSegmentTimeOptionsToPresets < ActiveRecord::Migration
++  def change
++    return if ActiveRecord::Base.connection.column_exists?(:presets, :segment_time_options)
++    add_column :presets, :segment_time_options, :string
++  end
++end
+diff --git a/db/schema.rb b/db/schema.rb
+index 2f80bfe..b5f4c08 100644
+--- a/db/schema.rb
++++ b/db/schema.rb
+@@ -11,49 +11,49 @@
+ #
+ # It's strongly recommended that you check this file into your version control system.
+ 
+-ActiveRecord::Schema.define(version: 20140522082136) do
++ActiveRecord::Schema.define(version: 20150916122149) do
+ 
+-  create_table "deliveries", force: true do |t|
+-    t.integer  "notification_id", null: false
+-    t.string   "state",           null: false
+-    t.datetime "notified_at",     null: false
++  create_table "deliveries", force: :cascade do |t|
++    t.integer  "notification_id", limit: 4,   null: false
++    t.string   "state",           limit: 255, null: false
++    t.datetime "notified_at",                 null: false
+     t.datetime "created_at"
+     t.datetime "updated_at"
+-    t.integer  "state_change_id"
++    t.integer  "state_change_id", limit: 4
+   end
+ 
+   add_index "deliveries", ["notification_id"], name: "index_deliveries_on_notification_id", using: :btree
+   add_index "deliveries", ["state_change_id"], name: "index_deliveries_on_state_change_id", using: :btree
+ 
+-  create_table "hosts", force: true do |t|
+-    t.string   "name",                              null: false
+-    t.string   "url",                               null: false
++  create_table "hosts", force: :cascade do |t|
++    t.string   "name",              limit: 255,                 null: false
++    t.string   "url",               limit: 255,                 null: false
+     t.datetime "created_at"
+     t.datetime "updated_at"
+-    t.boolean  "available",         default: false
+-    t.integer  "total_slots",       default: 0
+-    t.integer  "available_slots",   default: 0
++    t.boolean  "available",                     default: false
++    t.integer  "total_slots",       limit: 4,   default: 0
++    t.integer  "available_slots",   limit: 4,   default: 0
+     t.datetime "status_updated_at"
+   end
+ 
+   add_index "hosts", ["name"], name: "index_hosts_on_name", using: :btree
+ 
+-  create_table "jobs", force: true do |t|
+-    t.string   "source_file",                                             null: false
+-    t.string   "destination_file",                                        null: false
+-    t.integer  "preset_id",                                               null: false
++  create_table "jobs", force: :cascade do |t|
++    t.string   "source_file",            limit: 255,                      null: false
++    t.string   "destination_file",       limit: 255,                      null: false
++    t.integer  "preset_id",              limit: 4,                        null: false
+     t.datetime "created_at"
+     t.datetime "updated_at"
+-    t.string   "state"
+-    t.string   "remote_job_id"
++    t.string   "state",                  limit: 255
++    t.string   "remote_job_id",          limit: 255
+     t.datetime "transcoding_started_at"
+-    t.integer  "host_id"
++    t.integer  "host_id",                limit: 4
+     t.text     "message",                limit: 16777215
+-    t.float    "progress"
+-    t.integer  "duration"
+-    t.string   "filesize"
++    t.float    "progress",               limit: 24
++    t.integer  "duration",               limit: 4
++    t.string   "filesize",               limit: 255
+     t.datetime "completed_at"
+-    t.text     "arguments"
++    t.text     "arguments",              limit: 65535
+     t.boolean  "locked",                                  default: false
+     t.integer  "priority",               limit: 3
+   end
+@@ -64,36 +64,37 @@ ActiveRecord::Schema.define(version: 20140522082136) do
+   add_index "jobs", ["state"], name: "index_jobs_on_state", using: :btree
+   add_index "jobs", ["transcoding_started_at"], name: "index_jobs_on_transcoding_started_at", using: :btree
+ 
+-  create_table "notifications", force: true do |t|
+-    t.integer  "job_id"
+-    t.string   "type"
+-    t.string   "value"
++  create_table "notifications", force: :cascade do |t|
++    t.integer  "job_id",      limit: 4
++    t.string   "type",        limit: 255
++    t.string   "value",       limit: 255
+     t.datetime "created_at"
+     t.datetime "updated_at"
+-    t.string   "state"
++    t.string   "state",       limit: 255
+     t.datetime "notified_at"
+   end
+ 
+   add_index "notifications", ["job_id"], name: "index_notifications_on_job_id", using: :btree
+ 
+-  create_table "presets", force: true do |t|
+-    t.string   "name",              null: false
++  create_table "presets", force: :cascade do |t|
++    t.string   "name",                 limit: 255,   null: false
+     t.datetime "created_at"
+     t.datetime "updated_at"
+-    t.text     "parameters"
+-    t.text     "thumbnail_options"
++    t.text     "parameters",           limit: 65535
++    t.text     "thumbnail_options",    limit: 65535
++    t.string   "segment_time_options", limit: 255
+   end
+ 
+   add_index "presets", ["name"], name: "index_presets_on_name", using: :btree
+ 
+-  create_table "state_changes", force: true do |t|
+-    t.integer  "job_id"
+-    t.string   "state"
++  create_table "state_changes", force: :cascade do |t|
++    t.integer  "job_id",      limit: 4
++    t.string   "state",       limit: 255
+     t.text     "message",     limit: 16777215
+     t.datetime "created_at"
+     t.datetime "updated_at"
+-    t.float    "notified_at"
+-    t.integer  "position"
++    t.float    "notified_at", limit: 53
++    t.integer  "position",    limit: 4
+   end
+ 
+   add_index "state_changes", ["job_id"], name: "index_state_changes_on_job_id", using: :btree
+diff --git a/spec/features/presets/creating_spec.rb b/spec/features/presets/creating_spec.rb
+index c89f684..50369df 100644
+--- a/spec/features/presets/creating_spec.rb
++++ b/spec/features/presets/creating_spec.rb
+@@ -11,6 +11,7 @@ feature 'Creating a preset' do
+     fill_in 'Name', with: 'name'
+     fill_in 'Parameters', with: 'foo'
+     fill_in 'Thumbnail options', with: '{"foo":"bar"}'
++    fill_in 'HLS Segment time', with: '10'
+   end
+ 
+   scenario 'should work' do
+@@ -20,6 +21,7 @@ feature 'Creating a preset' do
+     expect(p.name).to eq('name')
+     expect(p.parameters).to eq('foo')
+     expect(p.thumbnail_options).to eq('{"foo":"bar"}')
++    expect(p.segment_time_options).to eq('10')
+   end
+ 
+   scenario 'no name' do
+diff --git a/spec/features/presets/editing_spec.rb b/spec/features/presets/editing_spec.rb
+index c45d4da..feda578 100644
+--- a/spec/features/presets/editing_spec.rb
++++ b/spec/features/presets/editing_spec.rb
+@@ -18,4 +18,12 @@ feature 'Editing a preset' do
+     click_button 'Update Preset'
+     expect(page).to have_text('new params')
+   end
++
++  scenario 'editing segment time' do
++    visit presets_path
++    click_link 'Edit'
++    fill_in 'HLS Segment time', with: '20'
++    click_button 'Update Preset'
++    expect(page).to have_text('20')
++  end
+ end
+diff --git a/spec/models/preset_spec.rb b/spec/models/preset_spec.rb
+index 0a156d4..9c66e48 100644
+--- a/spec/models/preset_spec.rb
++++ b/spec/models/preset_spec.rb
+@@ -3,42 +3,59 @@ require 'spec_helper'
+ describe Preset, type: :model do
+   describe 'generating a preset via the API' do
+     it 'should map the attributes correctly' do
+-      Preset.from_api('name' => 'name', 'parameters' => 'params', 'thumbnail_options' => '{"seconds":1}')
++      Preset.from_api('name' => 'name', 'parameters' => 'params', 'thumbnail_options' => '{"seconds":1}', 'segment_time_options' => 10)
+       p = Preset.last
+       expect(p.name).to eq('name')
+       expect(p.parameters).to eq('params')
+       expect(p.thumbnail_options).to eq('{"seconds":1}')
++      expect(p.segment_time_options).to eq('10')
+     end
+   end
+ 
+   describe 'validations' do
++    def valid_preset
++      Preset.new.tap do |p|
++        p.name = 'foo'
++        p.parameters = 'bar'
++      end
++    end
++
+     it 'should be valid with params and no thumb options' do
+-      p = Preset.new
+-      p.name = 'foo'
+-      p.parameters = 'bar'
+-      p.thumbnail_options = ''
+-      expect(p).to be_valid
++      expect(valid_preset).to be_valid
+     end
+ 
+     it 'should be valid with thumb options and no params' do
+-      p = Preset.new
+-      p.name = 'foo'
++      p = valid_preset
+       p.parameters = ''
+       p.thumbnail_options = '{"seconds":1}'
+       expect(p).to be_valid
+     end
+ 
+     it 'should not be valid without params and thumb options' do
+-      p = Preset.new
+-      p.name = 'foo'
++      p = valid_preset
++      p.parameters = nil
++      p.thumbnail_options = nil
+       expect(p).not_to be_valid
+     end
+ 
+     it 'should not be valid with non-JSON thumbnail options' do
+-      p = Preset.new
++      p = valid_preset
+       p.thumbnail_options = 'foo'
+       expect(p).not_to be_valid
+       expect(p.errors[:thumbnail_options]).to eq(['must be valid JSON'])
+     end
++
++    it 'should be valid with integer segment time options' do
++      p = valid_preset
++      p.segment_time_options = 10
++      expect(p).to be_valid
++    end
++
++    it 'should not be valid with non-integer segment time options' do
++      p = valid_preset
++      p.segment_time_options = '{"segment_time": 10}'
++      expect(p).to_not be_valid
++      expect(p.errors[:segment_time_options]).to eq(['is not a number'])
++    end
+   end
+ end
+diff --git a/spec/models/transcoder_spec.rb b/spec/models/transcoder_spec.rb
+index 8c6c46e..d891786 100644
+--- a/spec/models/transcoder_spec.rb
++++ b/spec/models/transcoder_spec.rb
+@@ -36,7 +36,7 @@ describe Transcoder, type: :model do
+     end
+ 
+     it 'should convert a job to transcoder params correctly' do
+-      # with thumbnail options presetn
++      # with thumbnail options present
+       expect(Transcoder.job_to_json(@job)).to eq({
+         'source_file' => 'source',
+         'destination_file' => 'dest',
+@@ -50,7 +50,15 @@ describe Transcoder, type: :model do
+         'source_file' => 'source',
+         'destination_file' => 'dest',
+         'encoder_options' => 'params',
+-        'thumbnail_options' => nil
++      })
++
++      # with hls segment options
++      @job.preset.segment_time_options = 10
++      expect(Transcoder.job_to_json(@job)).to eq({
++        'source_file' => 'source',
++        'destination_file' => 'dest',
++        'encoder_options' => 'params',
++        'segments_options' => { 'segment_time' => 10 }
+       })
+     end
+   end
