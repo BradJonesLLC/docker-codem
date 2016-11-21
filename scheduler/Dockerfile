@@ -7,8 +7,14 @@ RUN apt-get update && apt-get install -yqq --no-install-recommends \
     && gem install bundler \
     && apt-get clean autoclean && apt-get autoremove -y
 
+ENV CODEM_VERSION bd4da884483aed38bb6bed7e0e0187869ca5ba22
+
+# Checks out codem scheduler and applies HLS patch.
 RUN git clone git://github.com/madebyhiro/codem-schedule.git \
     && cd codem-schedule \
+    && git checkout ${CODEM_VERSION} \
+    && wget https://patch-diff.githubusercontent.com/raw/madebyhiro/codem-schedule/pull/38.patch \
+    && patch -p1 < 38.patch \
     && bundle install
 
 COPY crontab.txt /var/crontab.txt

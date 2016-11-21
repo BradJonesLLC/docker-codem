@@ -5,19 +5,15 @@ services:
   transcoder:
     build: transcoder
     volumes:
-     - /srv/videos:/srv/videos
-    links:
-     - db
+      - /srv/videos:/srv/videos
   scheduler:
     build: scheduler
     ports:
-     - "127.0.0.1:3000:3000"
-    links:
-     - db
+      - "127.0.0.1:3000:3000"
   db:
     image: mysql:5.7
     environment:
-     - MYSQL_ROOT_PASSWORD=docker
-     - MYSQL_DATABASE=codem
-     - MYSQL_USER=codem
-     - MYSQL_PASSWORD=codem
+      - MYSQL_ROOT_PASSWORD=docker
+      - MYSQL_DATABASE=codem
+      - MYSQL_USER=codem
+      - MYSQL_PASSWORD=codem
