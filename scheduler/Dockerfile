@@ -4,6 +4,7 @@ RUN apt-get update && apt-get install -yqq --no-install-recommends \
     git \
     cron \
     supervisor \
+    ca-certificates \
     && gem install bundler \
     && apt-get clean autoclean && apt-get autoremove -y
 
